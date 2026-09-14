@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Id": "os.morrow.desktop",
+        "Name": "MorrowOS",
+        "Description": "MorrowOS Desktop Theme",
+        "Version": "1.0",
+        "Website": "https://morrowos.dev",
+        "License": "GPL-2.0+"
+    }
+}

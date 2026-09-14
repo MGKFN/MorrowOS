@@ -1,0 +1,14 @@
+[
+  {"name":"Firefox","description":"Fast, private web browser","category":"Internet","icon":"firefox","method":"apt","package":"firefox"},
+  {"name":"VLC","description":"Play any media file","category":"Media","icon":"vlc","method":"apt","package":"vlc"},
+  {"name":"GIMP","description":"Professional image editor","category":"Graphics","icon":"gimp","method":"apt","package":"gimp"},
+  {"name":"LibreOffice","description":"Full office suite","category":"Office","icon":"libreoffice-writer","method":"apt","package":"libreoffice"},
+  {"name":"Kdenlive","description":"Video editor","category":"Media","icon":"kdenlive","method":"apt","package":"kdenlive"},
+  {"name":"Thunderbird","description":"Email client","category":"Internet","icon":"thunderbird","method":"apt","package":"thunderbird"},
+  {"name":"VS Code","description":"Code editor","category":"Development","icon":"code","method":"flatpak","package":"com.visualstudio.code","remote":"flathub"},
+  {"name":"Spotify","description":"Music streaming","category":"Media","icon":"spotify","method":"flatpak","package":"com.spotify.Client","remote":"flathub"},
+  {"name":"OBS Studio","description":"Screen recording","category":"Media","icon":"obs","method":"flatpak","package":"com.obsproject.Studio","remote":"flathub"},
+  {"name":"Discord","description":"Chat and voice","category":"Internet","icon":"discord","method":"flatpak","package":"com.discordapp.Discord","remote":"flathub"},
+  {"name":"Blender","description":"3D modeling and animation","category":"Graphics","icon":"blender","method":"flatpak","package":"org.blender.Blender","remote":"flathub"},
+  {"name":"Steam","description":"PC gaming platform","category":"Games","icon":"steam","method":"flatpak","package":"com.valvesoftware.Steam","remote":"flathub"}
+]

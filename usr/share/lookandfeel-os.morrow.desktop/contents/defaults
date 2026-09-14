@@ -1,0 +1,21 @@
+[kdeglobals][KDE]
+widgetStyle=Breeze
+
+[kdeglobals][General]
+ColorScheme=MorrowDark
+
+[kdeglobals][Icons]
+Theme=breeze-dark
+
+[kwinrc][org.kde.kdecoration2]
+library=org.kde.breeze
+theme=Breeze Dark
+
+[plasmarc][Theme]
+name=breeze-dark
+
+[kcminputrc][Mouse]
+cursorTheme=breeze_cursors
+
+[kscreenlockerrc][Greeter][Wallpaper][org.kde.image][General]
+Image=/usr/share/wallpapers/MorrowOS/contents/images/1920x1080.jpg

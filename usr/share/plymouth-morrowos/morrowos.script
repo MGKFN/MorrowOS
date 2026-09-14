@@ -1,0 +1,68 @@
+# MorrowOS Plymouth Boot Script
+
+screen_width  = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+# Background — deep dark
+bg = Rectangle();
+bg.SetPosition(0, 0);
+bg.SetSize(screen_width, screen_height);
+bg.SetColor(0.06, 0.06, 0.10, 1.0);
+
+# Logo text (rendered as sprite since we don't have image tools here)
+# We draw a glowing "M" wordmark using a box + label approach
+logo_box = Rectangle();
+logo_box.SetSize(160, 60);
+logo_box.SetPosition(screen_width/2 - 80, screen_height/2 - 80);
+logo_box.SetColor(0.20, 0.50, 1.0, 0.9);
+
+label = Image.Text("MorrowOS", 1, 1, 1, 1, "Sans Bold 28");
+label_sprite = Sprite(label);
+label_sprite.SetPosition(
+    screen_width/2  - label.GetWidth()/2,
+    screen_height/2 - label.GetHeight()/2 - 20
+);
+label_sprite.SetOpacity(0);
+
+# Tagline
+tag = Image.Text("Built for Tomorrow", 0.6, 0.6, 0.7, 1, "Sans 12");
+tag_sprite = Sprite(tag);
+tag_sprite.SetPosition(
+    screen_width/2 - tag.GetWidth()/2,
+    screen_height/2 + 20
+);
+tag_sprite.SetOpacity(0);
+
+# Progress bar track
+bar_w = 260;
+bar_h = 3;
+bar_x = screen_width/2 - bar_w/2;
+bar_y = screen_height/2 + 70;
+
+bar_bg = Rectangle();
+bar_bg.SetSize(bar_w, bar_h);
+bar_bg.SetPosition(bar_x, bar_y);
+bar_bg.SetColor(0.15, 0.15, 0.20, 1.0);
+
+bar_fg = Rectangle();
+bar_fg.SetSize(0, bar_h);
+bar_fg.SetPosition(bar_x, bar_y);
+bar_fg.SetColor(0.20, 0.55, 1.0, 1.0);
+
+progress = 0;
+fade_in  = 0;
+
+fun refresh_callback() {
+    fade_in += 0.03;
+    if (fade_in > 1) fade_in = 1;
+    label_sprite.SetOpacity(fade_in);
+    tag_sprite.SetOpacity(fade_in * 0.7);
+}
+
+fun boot_progress_callback(duration, progress_val) {
+    progress = progress_val;
+    bar_fg.SetSize(bar_w * progress, bar_h);
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);
+Plymouth.SetBootProgressFunction(boot_progress_callback);

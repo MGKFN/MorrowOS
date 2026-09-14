@@ -1,0 +1,112 @@
+name: Build MorrowOS ISO
+
+# Manual trigger only — this job downloads several GB and runs for a while.
+# Run it from the Actions tab: "Build MorrowOS ISO" -> "Run workflow".
+#
+# NOTE: this uses the workflow's built-in GITHUB_TOKEN, which GitHub creates
+# fresh for each run and scopes to this repo only. You do NOT need to create
+# a personal access token, and you should never paste one anywhere.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_iso_url:
+        description: "URL of the base ISO (must be a casper live ISO with casper/filesystem.squashfs)"
+        required: true
+        default: "https://cdimage.ubuntu.com/kubuntu/releases/24.04/release/kubuntu-24.04-desktop-amd64.iso"
+      version:
+        description: "Release tag, e.g. v1.1"
+        required: true
+        default: "v1.1"
+      publish_parts:
+        description: "Also commit split 20MB parts into /morrowos (bloats the repo permanently — prefer the release asset)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        # A stock runner has ~14GB free. The base ISO plus the extracted
+        # stage plus the uncompressed squashfs-root will blow past that.
+        # Removing the preinstalled toolchains buys back ~25GB.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/powershell /usr/share/swift
+          sudo docker image prune -af || true
+          sudo apt-get clean
+          echo "--- after cleanup ---"
+          df -h /
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            squashfs-tools xorriso isolinux syslinux-common rsync
+
+      - name: Download base ISO
+        run: |
+          curl -L --retry 3 --retry-delay 5 -o ubuntu-base.iso \
+            "${{ inputs.base_iso_url }}"
+          ls -lh ubuntu-base.iso
+          # Confirm it's the layout build.sh expects before burning an hour on it
+          xorriso -indev ubuntu-base.iso -find /casper -name 'filesystem.squashfs' 2>&1 \
+            | grep -q filesystem.squashfs \
+            || { echo "!! Base ISO has no casper/filesystem.squashfs."; \
+                 echo "   Ubuntu Desktop 24.04 uses layered squashfs files instead."; \
+                 echo "   Use a Kubuntu 24.04 ISO, or adapt build.sh step 2."; exit 1; }
+
+      - name: Build ISO
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          ISO_OUT: morrowos-${{ inputs.version }}.iso
+        run: |
+          chmod +x build.sh
+          sudo -E bash build.sh ubuntu-base.iso
+
+      - name: Checksum
+        id: sum
+        run: |
+          ISO="morrowos-${{ inputs.version }}.iso"
+          sha256sum "$ISO" | tee "$ISO.sha256"
+          echo "iso=$ISO" >> "$GITHUB_OUTPUT"
+          ls -lh "$ISO"
+
+      - name: Reclaim space before upload
+        run: |
+          rm -f ubuntu-base.iso
+          sudo rm -rf /tmp/morrowos-build
+          df -h /
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.version }}" \
+            "${{ steps.sum.outputs.iso }}" \
+            "${{ steps.sum.outputs.iso }}.sha256" \
+            --title "MorrowOS ${{ inputs.version }}" \
+            --notes "Automated build. BIOS + UEFI hybrid boot, 64-bit. See README for the change list."
+
+      - name: Split and commit parts
+        if: ${{ inputs.publish_parts }}
+        run: |
+          rm -rf morrowos && mkdir -p morrowos
+          split -b 20M "${{ steps.sum.outputs.iso }}" morrowos/morrowos-part-
+          cp "${{ steps.sum.outputs.iso }}.sha256" morrowos/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add morrowos/
+          git commit -m "ISO parts for ${{ inputs.version }}"
+          git push

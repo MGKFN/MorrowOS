@@ -1,0 +1,14 @@
+[org.kde.kdecoration2]
+library=org.kde.breeze
+theme=Breeze Dark
+
+[Compositing]
+Enabled=false
+AnimationSpeed=3
+WindowsBlockCompositing=true
+
+[Plugins]
+blurEnabled=false
+contrastEnabled=false
+slidingpopupsEnabled=false
+wobblywindowsEnabled=false
