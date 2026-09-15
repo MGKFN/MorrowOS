@@ -40,6 +40,25 @@ rm -rf "$WORK"; mkdir -p "$STAGE"
 xorriso -osirrox on -indev "$ISO_IN" -extract / "$STAGE"
 chmod -R u+w "$STAGE"
 
+# --- boot layout diagnostics -------------------------------------------
+# Ubuntu dropped isolinux in favour of GRUB-for-BIOS around 22.04, and
+# stopped shipping boot/grub/efi.img at the same time. Different bases
+# therefore need different handling, so dump what we actually got --
+# this runs before the hour-long chroot work so a layout surprise fails
+# cheap and with evidence instead of late and blind.
+echo "--- top level of base ISO ---"
+ls -A "$STAGE"
+echo "--- isolinux/ ---"
+ls -A "$STAGE/isolinux" 2>/dev/null || echo "(absent)"
+echo "--- boot/grub/ ---"
+ls -A "$STAGE/boot/grub" 2>/dev/null || echo "(absent)"
+echo "--- EFI/ ---"
+ls -AR "$STAGE/EFI" 2>/dev/null | head -20 || echo "(absent)"
+echo "--- El Torito catalog ---"
+xorriso -indev "$ISO_IN" -report_el_torito plain 2>&1 | head -30 || true
+echo "-----------------------------------------------------------------"
+
+
 echo "==> 2/8  Unpacking squashfs"
 unsquashfs -d "$ROOT" "$STAGE/casper/filesystem.squashfs"
 
@@ -146,57 +165,65 @@ mksquashfs "$ROOT" "$STAGE/casper/filesystem.squashfs" \
 du -sx --block-size=1 "$ROOT" | cut -f1 > "$STAGE/casper/filesystem.size"
 
 # boot config + disk identity.  initrd/vmlinuz are left byte-for-byte untouched.
-install -m644 "$SRC/iso/isolinux.cfg" "$STAGE/isolinux/isolinux.cfg"
+# Which menu file to write depends on the base ISO's bootloader: pre-22.04
+# bases have isolinux/, modern ones are GRUB-only for both BIOS and UEFI.
+WROTE_MENU=0
+if [ -d "$STAGE/isolinux" ]; then
+    install -m644 "$SRC/iso/isolinux.cfg" "$STAGE/isolinux/isolinux.cfg"
+    echo "    boot menu -> isolinux/isolinux.cfg"
+    WROTE_MENU=1
+fi
+if [ -d "$STAGE/boot/grub" ]; then
+    install -m644 "$SRC/iso/grub.cfg" "$STAGE/boot/grub/grub.cfg"
+    echo "    boot menu -> boot/grub/grub.cfg"
+    WROTE_MENU=1
+fi
+if [ "$WROTE_MENU" = "0" ]; then
+    echo "!! Base ISO has neither isolinux/ nor boot/grub/ — see the layout"
+    echo "   dump in step 1 above and adapt this block."
+    exit 1
+fi
+
 mkdir -p "$STAGE/.disk"
 install -m644 "$SRC/iso/disk-info.txt" "$STAGE/.disk/info"
 
 # md5sum.txt must match the new squashfs or integrity-check boots fail
 ( cd "$STAGE" && rm -f md5sum.txt && \
-  find . -type f -not -name md5sum.txt -not -path "./isolinux/boot.cat" -print0 \
+  find . -type f -not -name md5sum.txt \
+         -not -path "./isolinux/boot.cat" \
+         -not -path "./boot/grub/boot.cat" \
+         -not -name "boot.catalog" -print0 \
   | xargs -0 md5sum > md5sum.txt )
 
-echo "==> 8/8  Building ISO (BIOS + UEFI hybrid, 64-bit)"
+echo "==> 8/8  Building ISO (BIOS + UEFI, 64-bit)"
 rm -f "$ISO_OUT"
 
-# The base Ubuntu ISO is already BIOS+UEFI hybrid; -osirrox extraction in
-# step 1 pulled its EFI boot image (a FAT filesystem image containing
-# grubx64.efi/bootx64.efi) into the stage untouched. We only add a SECOND
-# El Torito boot entry pointing at it — isolinux/BIOS boot is untouched,
-# so this cannot trip the "never touch the initrd" rule above.
-EFI_IMG=""
-for cand in boot/grub/efi.img EFI/boot/efi.img boot/efi.img; do
-    [ -f "$STAGE/$cand" ] && EFI_IMG="$cand" && break
-done
-if [ -z "$EFI_IMG" ]; then
-    echo "!! No El Torito EFI image found in the base ISO at any of the"
-    echo "   usual paths (boot/grub/efi.img, EFI/boot/efi.img, boot/efi.img)."
-    echo "   Run: xorriso -indev \"$ISO_IN\" -report_el_torito plain"
-    echo "   to find its actual path, then re-run with that path added to"
-    echo "   the \$cand list above. Falling back to BIOS-only ISO."
-fi
-
-XORRISO_ARGS=(
-    -as mkisofs
-    -iso-level 3 -full-iso9660-filenames -volid "MORROWOS"
-    -eltorito-boot isolinux/isolinux.bin -eltorito-catalog isolinux/boot.cat
-    -no-emul-boot -boot-load-size 4 -boot-info-table
-)
-if [ -n "$EFI_IMG" ]; then
-    XORRISO_ARGS+=(
-        -eltorito-alt-boot
-        -e "$EFI_IMG" -no-emul-boot
-        -isohybrid-gpt-basdat
-    )
-fi
-XORRISO_ARGS+=(
-    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin
-    -output "$ISO_OUT" "$STAGE"
-)
-xorriso "${XORRISO_ARGS[@]}"
+# Rather than reconstructing the boot structures with -as mkisofs (which
+# means knowing whether the base uses isolinux or GRUB, and where its EFI
+# image lives -- both of which moved between Ubuntu releases), replay the
+# source ISO's own boot setup verbatim and overwrite only the files we
+# actually changed. Whatever BIOS+UEFI arrangement the base shipped with
+# carries over intact. The initrd is never in the -map list, so rule 1
+# above holds by construction.
+xorriso -indev "$ISO_IN" -outdev "$ISO_OUT" \
+    -volid "MORROWOS" \
+    -compliance no_emul_toc \
+    -map "$STAGE/casper/filesystem.squashfs" /casper/filesystem.squashfs \
+    -map "$STAGE/casper/filesystem.size"     /casper/filesystem.size \
+    -map "$STAGE/.disk/info"                 /.disk/info \
+    -map "$STAGE/md5sum.txt"                 /md5sum.txt \
+    $( [ -f "$STAGE/isolinux/isolinux.cfg" ] && \
+       echo -map "$STAGE/isolinux/isolinux.cfg" /isolinux/isolinux.cfg ) \
+    $( [ -f "$STAGE/boot/grub/grub.cfg" ] && \
+       echo -map "$STAGE/boot/grub/grub.cfg" /boot/grub/grub.cfg ) \
+    -boot_image any replay
 
 echo
 echo "Built: $ISO_OUT ($(du -h "$ISO_OUT" | cut -f1))"
 sha256sum "$ISO_OUT"
+echo
+echo "Boot structures carried over from the base ISO:"
+xorriso -indev "$ISO_OUT" -report_el_torito plain 2>&1 | head -20 || true
 echo
 echo "Test BIOS boot:  qemu-system-x86_64 -m 3072 -smp 2 -cdrom $ISO_OUT -boot d -vga virtio"
 if [ -n "$EFI_IMG" ]; then
