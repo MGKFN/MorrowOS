@@ -13,7 +13,7 @@ on:
       base_iso_url:
         description: "URL of the base ISO (must be a casper live ISO with casper/filesystem.squashfs)"
         required: true
-        default: "https://cdimage.ubuntu.com/kubuntu/releases/24.04/release/kubuntu-24.04-desktop-amd64.iso"
+        default: "https://cdimage.ubuntu.com/kubuntu/releases/24.04/release/kubuntu-24.04.5-desktop-amd64.iso"
       version:
         description: "Release tag, e.g. v1.1"
         required: true
@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Free up disk space
         # A stock runner has ~14GB free. The base ISO plus the extracted
