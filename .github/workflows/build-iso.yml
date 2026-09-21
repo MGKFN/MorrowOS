@@ -60,6 +60,18 @@ jobs:
           curl -L --retry 3 --retry-delay 5 -o ubuntu-base.iso \
             "${{ inputs.base_iso_url }}"
           ls -lh ubuntu-base.iso
+          # A 404 page is a few hundred bytes and curl -L happily saves it.
+          SIZE=$(stat -c%s ubuntu-base.iso)
+          if [ "$SIZE" -lt 1000000000 ]; then
+            echo "!! Downloaded only $SIZE bytes — that is not an ISO."
+            echo "   The URL is probably wrong or the file moved. First 2000 bytes:"
+            head -c 2000 ubuntu-base.iso
+            echo
+            echo "   cdimage only keeps the CURRENT point release, so a bare"
+            echo "   '24.04' filename will 404 — check what is actually at"
+            echo "   https://cdimage.ubuntu.com/kubuntu/releases/24.04/release/"
+            exit 1
+          fi
           # Confirm it's the layout build.sh expects before burning an hour on it
           xorriso -indev ubuntu-base.iso -find /casper -name 'filesystem.squashfs' 2>&1 \
             | grep -q filesystem.squashfs \
@@ -89,24 +101,93 @@ jobs:
           sudo rm -rf /tmp/morrowos-build
           df -h /
 
+      - name: Stage release assets
+        id: stage
+        # GitHub rejects any single release asset over 2 GiB (2147483648 B).
+        # Split anything larger into parts that stay under it. Parts are
+        # named .partNN with numeric suffixes, so `cat ...part*` reassembles
+        # them in the right order without any sorting.
+        run: |
+          ISO="${{ steps.sum.outputs.iso }}"
+          LIMIT=2147483648
+          SIZE=$(stat -c%s "$ISO")
+          mkdir -p release
+          cp "$ISO.sha256" release/
+
+          if [ "$SIZE" -lt "$LIMIT" ]; then
+            echo "ISO is $SIZE bytes — under the cap, uploading whole."
+            mv "$ISO" release/
+            echo "split=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ISO is $SIZE bytes — over the 2 GiB cap, splitting."
+            # 1900M (MiB) = 1992294400 B, comfortably under the cap
+            split -b 1900M -d "$ISO" "release/$ISO.part"
+            rm -f "$ISO"
+            echo "split=true" >> "$GITHUB_OUTPUT"
+          fi
+          ls -lh release/
+
+      - name: Write release notes
+        run: |
+          ISO="${{ steps.sum.outputs.iso }}"
+          {
+            echo "Automated build. BIOS + UEFI, 64-bit."
+            echo
+            echo '**SHA256 of the assembled ISO:**'
+            echo '```'
+            cat "release/$ISO.sha256"
+            echo '```'
+            echo
+            if [ "${{ steps.stage.outputs.split }}" = "true" ]; then
+              echo "The ISO exceeds GitHub's 2 GiB per-asset limit, so it is"
+              echo "published as numbered parts. Download every \`.part*\` file"
+              echo "into one folder, then reassemble:"
+              echo
+              echo '**Linux / macOS**'
+              echo '```bash'
+              echo "cat $ISO.part* > $ISO"
+              echo "sha256sum -c $ISO.sha256"
+              echo '```'
+              echo
+              echo '**Windows (PowerShell)**'
+              echo '```powershell'
+              echo "\$out = [System.IO.File]::OpenWrite(\"$ISO\")"
+              echo "Get-ChildItem \"$ISO.part*\" | Sort-Object Name | ForEach-Object {"
+              echo "    \$bytes = [System.IO.File]::ReadAllBytes(\$_.FullName)"
+              echo "    \$out.Write(\$bytes, 0, \$bytes.Length)"
+              echo "}"
+              echo "\$out.Close()"
+              echo "(Get-FileHash \"$ISO\" -Algorithm SHA256).Hash.ToLower()"
+              echo '```'
+              echo
+              echo "Compare that hash against the one above before booting it."
+            fi
+            echo
+            echo "See the README for the full change list and known gaps."
+          } > release-notes.md
+          cat release-notes.md
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+        # Idempotent: a re-run after a partial failure uploads into the
+        # existing release instead of erroring out on "already exists".
         run: |
-          gh release create "${{ inputs.version }}" \
-            "${{ steps.sum.outputs.iso }}" \
-            "${{ steps.sum.outputs.iso }}.sha256" \
-            --title "MorrowOS ${{ inputs.version }}" \
-            --notes "Automated build. BIOS + UEFI hybrid boot, 64-bit. See README for the change list."
+          VER="${{ inputs.version }}"
+          if gh release view "$VER" >/dev/null 2>&1; then
+            echo "Release $VER exists — uploading assets into it."
+            gh release upload "$VER" release/* --clobber
+            gh release edit "$VER" --notes-file release-notes.md
+          else
+            gh release create "$VER" release/* \
+              --title "MorrowOS $VER" \
+              --notes-file release-notes.md
+          fi
 
       - name: Split and commit parts
         if: ${{ inputs.publish_parts }}
         run: |
-          rm -rf morrowos && mkdir -p morrowos
-          split -b 20M "${{ steps.sum.outputs.iso }}" morrowos/morrowos-part-
-          cp "${{ steps.sum.outputs.iso }}.sha256" morrowos/
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add morrowos/
-          git commit -m "ISO parts for ${{ inputs.version }}"
-          git push
+          echo "publish_parts is on, but the ISO has already been moved into"
+          echo "release/ and published as release assets. Committing hundreds"
+          echo "of MB to git bloats the repo permanently — use the release."
+          exit 1
