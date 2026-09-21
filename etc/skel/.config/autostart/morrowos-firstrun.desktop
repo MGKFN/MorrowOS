@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MorrowOS first-run setup
+Comment=Applies the MorrowOS wallpaper and colour scheme on first login
+Exec=/usr/local/bin/morrowos-firstrun.sh
+Icon=morrowos-logo
+Terminal=false
+NoDisplay=true
+X-KDE-autostart-phase=2
+X-GNOME-Autostart-enabled=true

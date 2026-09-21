@@ -80,7 +80,7 @@ chroot "$ROOT" apt-get install -y \
     xserver-xorg-video-amdgpu xserver-xorg-video-ati \
     xserver-xorg-video-nouveau xserver-xorg-video-intel \
     polkit-kde-agent-1 policykit-1 \
-    papirus-icon-theme \
+    papirus-icon-theme gtk-update-icon-cache \
     firefox libreoffice-writer libreoffice-calc vlc
 
 # Flathub must be registered system-wide at build time, or every flatpak
@@ -107,17 +107,25 @@ cp -r "$SRC/usr/share/sddm-morrowos" "$ROOT/usr/share/sddm/themes/morrowos"
 install -m644 "$SRC/etc/sddm.conf" "$ROOT/etc/sddm.conf"
 
 # plasma theming
-install -Dm644 "$SRC/usr/share/color-schemes/MorrowDark.colors" \
-    "$ROOT/usr/share/color-schemes/MorrowDark.colors"
+install -Dm644 "$SRC/usr/share/color-schemes/MorrowDawn.colors" \
+    "$ROOT/usr/share/color-schemes/MorrowDawn.colors"
 rm -rf "$ROOT/usr/share/wallpapers/MorrowOS"
 cp -r "$SRC/usr/share/wallpapers/MorrowOS" "$ROOT/usr/share/wallpapers/"
 rm -rf "$ROOT/usr/share/plasma/look-and-feel/os.morrow.desktop"
 cp -r "$SRC/usr/share/lookandfeel-os.morrow.desktop" \
     "$ROOT/usr/share/plasma/look-and-feel/os.morrow.desktop"
 
-# skel defaults
+# skel defaults.  -r matters: .config/autostart/ is a subdirectory, and a
+# plain cp would silently skip it, taking the first-run setup with it.
 mkdir -p "$ROOT/etc/skel/.config"
-cp "$SRC"/etc/skel/.config/* "$ROOT/etc/skel/.config/"
+cp -r "$SRC"/etc/skel/.config/. "$ROOT/etc/skel/.config/"
+
+# First-run desktop setup.  The wallpaper selection lives in
+# plasma-org.kde.plasma.desktop-appletsrc, which must never be hand-written
+# (rule 4 above), so it is applied at first login through Plasma's own CLI
+# instead.  Without this the wallpaper ships but is never selected.
+install -Dm755 "$SRC/usr/local/bin/morrowos-firstrun.sh" \
+    "$ROOT/usr/local/bin/morrowos-firstrun.sh"
 
 # SDDM resolves Session= with or without the .desktop suffix depending on
 # version; the symlink makes both spellings work.
@@ -143,6 +151,37 @@ install -m644 "$SRC/morrowstore/catalog.json" "$ROOT/usr/share/morrowstore/catal
 install -m644 "$SRC/morrowstore/morrowstore.desktop" \
     "$ROOT/usr/share/applications/morrowstore.desktop"
 install -m755 "$SRC/morrowstore/morrowstore-launcher.sh" "$ROOT/usr/bin/morrowstore"
+
+# Icons.  morrowstore.desktop says Icon=morrowstore, and through v1.0 that
+# pointed at a file which was never installed -- the asset existed in the
+# source tree and nothing copied it in, so the launcher and task manager
+# both fell back to a generic placeholder.  Install into the hicolor theme
+# (where icon lookup actually looks), with a /usr/share/pixmaps copy as the
+# fallback for anything that ignores themes, then refresh the cache or the
+# new files are not picked up until something else invalidates it.
+for size in 16 22 24 32 48 64 128 256; do
+    for name in morrowstore morrowos-logo; do
+        src="$SRC/usr/share/icons/hicolor/${size}x${size}/apps/${name}.png"
+        [ -f "$src" ] || continue
+        install -Dm644 "$src" \
+            "$ROOT/usr/share/icons/hicolor/${size}x${size}/apps/${name}.png"
+    done
+done
+for name in morrowstore morrowos-logo; do
+    [ -f "$SRC/usr/share/icons/${name}.svg" ] && \
+        install -Dm644 "$SRC/usr/share/icons/${name}.svg" \
+            "$ROOT/usr/share/icons/hicolor/scalable/apps/${name}.svg"
+    [ -f "$SRC/usr/share/icons/${name}.png" ] && \
+        install -Dm644 "$SRC/usr/share/icons/${name}.png" \
+            "$ROOT/usr/share/pixmaps/${name}.png"
+done
+chroot "$ROOT" gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || \
+    echo "    (icon cache refresh skipped — gtk-update-icon-cache unavailable)"
+
+# Fail loudly if the icon the .desktop file names is not actually present,
+# rather than shipping another release with a placeholder icon.
+test -f "$ROOT/usr/share/icons/hicolor/256x256/apps/morrowstore.png" || {
+    echo "!! morrowstore icon missing from the image after install"; exit 1; }
 
 # The live user is created at boot by casper (username= on the cmdline).
 # It must NOT pre-exist in the image or casper's user-setup-apply collides.

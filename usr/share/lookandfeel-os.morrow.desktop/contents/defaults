@@ -2,10 +2,10 @@
 widgetStyle=Breeze
 
 [kdeglobals][General]
-ColorScheme=MorrowDark
+ColorScheme=MorrowDawn
 
 [kdeglobals][Icons]
-Theme=breeze-dark
+Theme=Papirus-Dark
 
 [kwinrc][org.kde.kdecoration2]
 library=org.kde.breeze

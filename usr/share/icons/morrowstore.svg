@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="MorrowStore">
+  <title>MorrowStore</title>
+  <!--
+    MorrowStore app icon.
+
+    Shares the sun disc and its gradient with morrowos-logo.svg so the
+    first-party icons read as a family; the download arrow carries the
+    "get apps" meaning on its own.
+
+    Earlier drafts clipped the sun at a horizon line the way the OS logo
+    does. At icon sizes a dome sitting on a wide horizontal bar reads as a
+    HAT, not a sunrise — so the store icon uses the full disc instead.
+    Verified legible down to 16px.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#201B33"/>
+      <stop offset="100%" stop-color="#100E1A"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#F7C479"/>
+      <stop offset="55%"  stop-color="#F2A65A"/>
+      <stop offset="100%" stop-color="#E8705F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- app tile -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#tile)"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="51.5"
+        fill="none" stroke="#F2A65A" stroke-opacity="0.22" stroke-width="1"/>
+
+  <!-- sun -->
+  <circle cx="128" cy="104" r="54" fill="url(#sun)"/>
+
+  <!-- download arrow -->
+  <g stroke="#F3ECE3" stroke-width="14" stroke-linecap="round"
+     stroke-linejoin="round" fill="none">
+    <path d="M128 168 L128 210"/>
+    <path d="M104 190 L128 214 L152 190"/>
+  </g>
+</svg>
