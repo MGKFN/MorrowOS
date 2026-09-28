@@ -18,6 +18,10 @@ on:
         description: "Release tag, e.g. v1.1"
         required: true
         default: "v1.1"
+      boot_splash:
+        description: "Brand the boot splash (regenerates the initrd — verified, falls back to stock on any failure)"
+        type: boolean
+        default: true
       publish_parts:
         description: "Also commit split 20MB parts into /morrowos (bloats the repo permanently — prefer the release asset)"
         type: boolean
@@ -48,6 +52,50 @@ jobs:
           sudo apt-get clean
           echo "--- after cleanup ---"
           df -h /
+
+      - name: Preflight
+        # Cheap checks that fail in seconds rather than 40 minutes in.
+        run: |
+          echo "--- Dawn palette contrast (make_colorscheme refuses to write if this fails) ---"
+          python3 tools/dawn_palette.py
+          echo
+          echo "--- every source path build.sh installs ---"
+          python3 tools/check_assets.py
+          echo
+          echo "--- boot branding assets ---"
+          MISSING=0
+          for f in usr/share/plymouth-morrowos/morrowos.plymouth \
+                   usr/share/plymouth-morrowos/morrowos.script \
+                   usr/share/plymouth-morrowos/mark.png \
+                   usr/share/plymouth-morrowos/glow.png \
+                   usr/share/plymouth-morrowos/wordmark.png \
+                   usr/share/plymouth-morrowos/bar-track.png \
+                   usr/share/plymouth-morrowos/bar-fill.png \
+                   iso/grub-theme/theme.txt \
+                   iso/grub-theme/background.png \
+                   scripts/boot-splash.sh \
+                   scripts/installer-branding.sh \
+                   etc/calamares/branding/morrowos/branding.desc \
+                   etc/calamares/branding/morrowos/show.qml \
+                   etc/calamares/branding/morrowos/logo.png \
+                   etc/calamares/branding/morrowos/welcome.png; do
+            if [ -e "$f" ]; then echo "  ok      $f"
+            else echo "  MISSING $f"; MISSING=1; fi
+          done
+          # Rectangle() is not a real Plymouth primitive. A theme that calls it
+          # aborts silently at boot, which is how v1.0-v1.2 shipped.
+          if grep -vE '^\s*#' usr/share/plymouth-morrowos/morrowos.script | grep -q 'Rectangle'; then
+            echo "!! morrowos.script calls Rectangle(), which does not exist in Plymouth's script module."
+            MISSING=1
+          fi
+          bash -n scripts/boot-splash.sh || MISSING=1
+          bash -n scripts/installer-branding.sh || MISSING=1
+
+          echo
+          echo "--- calamares installer branding ---"
+          python3 tools/check_installer_branding.py || MISSING=1
+
+          exit $MISSING
 
       - name: Install build tools
         run: |
@@ -83,9 +131,67 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
           ISO_OUT: morrowos-${{ inputs.version }}.iso
+          MORROW_BOOT_SPLASH: ${{ inputs.boot_splash && '1' || '0' }}
         run: |
-          chmod +x build.sh
-          sudo -E bash build.sh ubuntu-base.iso
+          # pipefail matters: without it `tee` masks a failed build.sh.
+          set -o pipefail
+          chmod +x build.sh scripts/boot-splash.sh
+          sudo -E bash build.sh ubuntu-base.iso 2>&1 | tee build.log
+
+      - name: Boot branding result
+        if: always()
+        # The splash step is designed to degrade rather than fail, so its
+        # outcome has to be reported explicitly -- otherwise a fallback to the
+        # stock splash looks exactly like a success in the log.
+        run: |
+          touch build.log
+          {
+            echo "## Boot branding"
+            echo
+            if grep -q "boot splash: APPLIED" build.log; then
+              echo "**Splash: MorrowOS.** The initrd was regenerated and verified."
+              echo
+              echo '```'
+              grep -E "casper scripts:|overlay/squashfs/loop|morrowos theme files|default plymouth theme|kernel:|new initrd:|base initrd:" build.log || true
+              echo '```'
+            elif grep -q "MORROW_BOOT_SPLASH=0\|skipped (MORROW_BOOT_SPLASH" build.log; then
+              echo "**Splash: stock** — skipped, boot_splash was off for this run."
+            else
+              echo "**Splash: stock** — the branding step bailed out and restored the base initrd."
+              echo "The ISO still boots. Reason:"
+              echo
+              echo '```'
+              grep -E "^!!|boot splash NOT applied" build.log | head -10 || echo "(no reason recorded)"
+              echo '```'
+            fi
+            echo
+            if grep -q "Boot menu:   MorrowOS Dawn theme" build.log; then
+              echo "**Menu: MorrowOS Dawn theme.**"
+            else
+              echo "**Menu: stock** — the GRUB theme was not installed."
+            fi
+            echo
+            if grep -q "installer branding: APPLIED" build.log; then
+              echo "**Installer: MorrowOS-branded.** It installs to disk as MorrowOS."
+              grep -E "unpackfs source|branding files:|settings.conf branding|launcher branded" build.log \
+                | sed 's/^/    /' || true
+            else
+              echo "**Installer: stock** — it will say Kubuntu. Reason:"
+              echo
+              echo '```'
+              grep -E "installer branding NOT applied" build.log | head -5 || echo "(no reason recorded)"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
 
       - name: Checksum
         id: sum
@@ -133,6 +239,19 @@ jobs:
           {
             echo "Automated build. BIOS + UEFI, 64-bit."
             echo
+            if grep -q "boot splash: APPLIED" build.log 2>/dev/null; then
+              echo "Boot splash: MorrowOS Dawn."
+            else
+              echo "Boot splash: stock (the branding step fell back — see the run log)."
+            fi
+            grep -q "Boot menu:   MorrowOS Dawn theme" build.log 2>/dev/null \
+              && echo "Boot menu: MorrowOS Dawn theme."
+            if grep -q "installer branding: APPLIED" build.log 2>/dev/null; then
+              echo "Installer: installs to disk as MorrowOS."
+            else
+              echo "Installer: stock (unbranded — see the run log)."
+            fi
+            echo
             echo '**SHA256 of the assembled ISO:**'
             echo '```'
             cat "release/$ISO.sha256"
@@ -149,15 +268,43 @@ jobs:
               echo "sha256sum -c $ISO.sha256"
               echo '```'
               echo
-              echo '**Windows (PowerShell)**'
+              echo '**Windows — simplest (Command Prompt, in the folder with the parts)**'
+              echo '```'
+              printf 'copy /b '
+              FIRST=1
+              for f in release/$ISO.part*; do
+                [ "$FIRST" = 1 ] || printf '+ '
+                printf '%s ' "$(basename "$f")"
+                FIRST=0
+              done
+              printf '%s\n' "$ISO"
+              echo '```'
+              echo
+              echo "Then check it in PowerShell:"
               echo '```powershell'
-              echo "\$out = [System.IO.File]::OpenWrite(\"$ISO\")"
-              echo "Get-ChildItem \"$ISO.part*\" | Sort-Object Name | ForEach-Object {"
-              echo "    \$bytes = [System.IO.File]::ReadAllBytes(\$_.FullName)"
-              echo "    \$out.Write(\$bytes, 0, \$bytes.Length)"
+              echo "(Get-FileHash \"$ISO\" -Algorithm SHA256).Hash.ToLower()"
+              echo '```'
+              echo
+              echo '**Windows — PowerShell alternative**'
+              echo
+              echo 'Three things here are deliberate and were each a real bug:'
+              echo '`Join-Path $PWD.Path` because .NET APIs resolve relative paths'
+              echo "against the process working directory, NOT PowerShell's location;"
+              echo '`File::Create` rather than `OpenWrite` because OpenWrite does not'
+              echo 'truncate, so re-running over an existing file leaves trailing bytes'
+              echo 'and a wrong hash; and `CopyTo` rather than `ReadAllBytes` because'
+              echo 'a 1900 MiB part read whole sits right at the ~2 GB .NET array limit.'
+              echo '```powershell'
+              echo "\$dir = \$PWD.Path"
+              echo "\$iso = Join-Path \$dir \"$ISO\""
+              echo "\$out = [System.IO.File]::Create(\$iso)"
+              echo "Get-ChildItem (Join-Path \$dir \"$ISO.part*\") | Sort-Object Name | ForEach-Object {"
+              echo "    \$in = [System.IO.File]::OpenRead(\$_.FullName)"
+              echo "    \$in.CopyTo(\$out)"
+              echo "    \$in.Close()"
               echo "}"
               echo "\$out.Close()"
-              echo "(Get-FileHash \"$ISO\" -Algorithm SHA256).Hash.ToLower()"
+              echo "(Get-FileHash \$iso -Algorithm SHA256).Hash.ToLower()"
               echo '```'
               echo
               echo "Compare that hash against the one above before booting it."

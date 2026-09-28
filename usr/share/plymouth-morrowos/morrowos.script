@@ -1,68 +1,191 @@
-# MorrowOS Plymouth Boot Script
+# MorrowOS "Dawn" boot splash
+# ---------------------------------------------------------------------------
+# Generated assets come from tools/make_plymouth.py, which renders them from
+# tools/dawn_palette.py -- the same palette as the colour scheme, wallpaper
+# and icons. Regenerate assets there, never by hand.
+#
+# TWO THINGS THAT LOOK LIKE THEY SHOULD WORK AND DO NOT:
+#
+#   Rectangle()  does not exist in Plymouth's script module. The pre-v1.2
+#   version of this file drew its background and progress bar with it; that
+#   is an undefined function, the script aborts on the first call, and you
+#   get a blank or stock splash with no error anywhere. All shapes here are
+#   PNGs. The only primitives used below are Window, Image, Sprite, Plymouth
+#   and Math, which are the whole documented surface of the script plugin.
+#
+#   Image.Text() needs a font inside the INITRD, not on the installed
+#   system. Which fonts the plymouth initramfs hook pulls in varies between
+#   releases, so text can render on the build host and silently vanish at
+#   boot. The wordmark is therefore pre-rendered to a PNG. Image.Text is
+#   used only for the password/message paths, where there is no
+#   alternative, and every use is null-guarded.
+# ---------------------------------------------------------------------------
 
-screen_width  = Window.GetWidth();
-screen_height = Window.GetHeight();
+sw = Window.GetWidth(0);
+sh = Window.GetHeight(0);
+ox = Window.GetX(0);
+oy = Window.GetY(0);
 
-# Background — deep dark
-bg = Rectangle();
-bg.SetPosition(0, 0);
-bg.SetSize(screen_width, screen_height);
-bg.SetColor(0.06, 0.06, 0.10, 1.0);
+# Background gradient. Resolution independent, so it costs nothing to get
+# right on every mode -- NIGHT (#100E1A) at the top, INDIGO (#171326) at the
+# bottom, matching dawn_palette.
+Window.SetBackgroundTopColor(0.063, 0.055, 0.102);
+Window.SetBackgroundBottomColor(0.090, 0.075, 0.149);
 
-# Logo text (rendered as sprite since we don't have image tools here)
-# We draw a glowing "M" wordmark using a box + label approach
-logo_box = Rectangle();
-logo_box.SetSize(160, 60);
-logo_box.SetPosition(screen_width/2 - 80, screen_height/2 - 80);
-logo_box.SetColor(0.20, 0.50, 1.0, 0.9);
+# ── layout ─────────────────────────────────────────────────────────────────
+mark_cy   = sh * 0.40;          # centre of the sun mark
+word_cy   = sh * 0.615;
+bar_cy    = sh * 0.78;
 
-label = Image.Text("MorrowOS", 1, 1, 1, 1, "Sans Bold 28");
-label_sprite = Sprite(label);
-label_sprite.SetPosition(
-    screen_width/2  - label.GetWidth()/2,
-    screen_height/2 - label.GetHeight()/2 - 20
-);
-label_sprite.SetOpacity(0);
+# Scaled against HEIGHT, not width, so the mark keeps its proportion on
+# ultrawide modes instead of ballooning.
+mark_size = sh * 0.26;
 
-# Tagline
-tag = Image.Text("Built for Tomorrow", 0.6, 0.6, 0.7, 1, "Sans 12");
-tag_sprite = Sprite(tag);
-tag_sprite.SetPosition(
-    screen_width/2 - tag.GetWidth()/2,
-    screen_height/2 + 20
-);
-tag_sprite.SetOpacity(0);
+# The horizon rule sits at 0.68 of mark.png's height, i.e. 0.18 of the mark
+# below its centre. Deriving it rather than hand-tuning a screen fraction
+# welds the glow to the sun's base at every resolution.
+horizon   = mark_cy + mark_size * 0.18;
 
-# Progress bar track
-bar_w = 260;
-bar_h = 3;
-bar_x = screen_width/2 - bar_w/2;
-bar_y = screen_height/2 + 70;
+# ── horizon glow ───────────────────────────────────────────────────────────
+glow_img = Image("glow.png");
+glow_w   = sw * 1.10;
+glow_h   = glow_img.GetHeight() * (glow_w / glow_img.GetWidth());
+glow     = Sprite(glow_img.Scale(glow_w, glow_h));
+glow.SetPosition(ox + sw / 2 - glow_w / 2, oy + horizon - glow_h / 2, 1);
+glow.SetOpacity(0);
 
-bar_bg = Rectangle();
-bar_bg.SetSize(bar_w, bar_h);
-bar_bg.SetPosition(bar_x, bar_y);
-bar_bg.SetColor(0.15, 0.15, 0.20, 1.0);
+# ── sun mark ───────────────────────────────────────────────────────────────
+mark_img  = Image("mark.png");
+mark      = Sprite(mark_img.Scale(mark_size, mark_size));
+mark.SetPosition(ox + sw / 2 - mark_size / 2, oy + mark_cy - mark_size / 2, 2);
+mark.SetOpacity(0);
 
-bar_fg = Rectangle();
-bar_fg.SetSize(0, bar_h);
-bar_fg.SetPosition(bar_x, bar_y);
-bar_fg.SetColor(0.20, 0.55, 1.0, 1.0);
+# ── wordmark ───────────────────────────────────────────────────────────────
+word_img = Image("wordmark.png");
+word_w   = sh * 0.36;
+word_h   = word_img.GetHeight() * (word_w / word_img.GetWidth());
+word     = Sprite(word_img.Scale(word_w, word_h));
+word.SetPosition(ox + sw / 2 - word_w / 2, oy + word_cy - word_h / 2, 2);
+word.SetOpacity(0);
 
+# ── progress bar ───────────────────────────────────────────────────────────
+track_img = Image("bar-track.png");
+fill_img  = Image("bar-fill.png");
+
+bar_w = sw * 0.24;
+bar_h = track_img.GetHeight();
+bar_x = ox + sw / 2 - bar_w / 2;
+bar_y = oy + bar_cy;
+
+track = Sprite(track_img.Scale(bar_w, bar_h));
+track.SetPosition(bar_x, bar_y, 2);
+track.SetOpacity(0);
+
+fill = Sprite();
+fill.SetPosition(bar_x, bar_y, 3);
+fill.SetOpacity(0);
+
+# ── state ──────────────────────────────────────────────────────────────────
+fade     = 0;
+pulse    = 0;
 progress = 0;
-fade_in  = 0;
+shown    = 0;
+quitting = 0;
 
-fun refresh_callback() {
-    fade_in += 0.03;
-    if (fade_in > 1) fade_in = 1;
-    label_sprite.SetOpacity(fade_in);
-    tag_sprite.SetOpacity(fade_in * 0.7);
+# ── animation ──────────────────────────────────────────────────────────────
+fun refresh() {
+    if (quitting) return;
+
+    # Fade everything up over roughly the first second.
+    if (fade < 1) {
+        fade = fade + 0.022;
+        if (fade > 1) fade = 1;
+    }
+
+    # Slow breathing on the glow only. The mark itself holds still -- a
+    # pulsing logo on a boot screen reads as a stall, not as life.
+    pulse = pulse + 0.018;
+    breathe = 0.86 + Math.Sin(pulse) * 0.14;
+
+    glow.SetOpacity(fade * breathe);
+    mark.SetOpacity(fade);
+    word.SetOpacity(fade);
+    track.SetOpacity(fade * 0.9);
+
+    if (progress > 0) {
+        w = bar_w * progress;
+        if (w < 1) w = 1;
+        fill.SetImage(fill_img.Scale(w, bar_h));
+        fill.SetOpacity(fade);
+    }
 }
+Plymouth.SetRefreshFunction(refresh);
 
-fun boot_progress_callback(duration, progress_val) {
-    progress = progress_val;
-    bar_fg.SetSize(bar_w * progress, bar_h);
+fun on_boot_progress(duration, pct) {
+    progress = pct;
 }
+Plymouth.SetBootProgressFunction(on_boot_progress);
 
-Plymouth.SetRefreshFunction(refresh_callback);
-Plymouth.SetBootProgressFunction(boot_progress_callback);
+# ── password prompt ────────────────────────────────────────────────────────
+# Not used by the live ISO (no encrypted volume), but a theme that ignores
+# this shows a frozen splash while the boot silently waits for typing --
+# indistinguishable from a hang.
+prompt_sprite = Sprite();
+bullet_sprite = Sprite();
+
+fun on_password(prompt, bullets) {
+    txt = Image.Text(prompt, 0.953, 0.925, 0.890, 1, "Sans 12");
+    if (txt) {
+        prompt_sprite.SetImage(txt);
+        prompt_sprite.SetPosition(ox + sw / 2 - txt.GetWidth() / 2,
+                                  oy + bar_cy + sh * 0.06, 5);
+    }
+    dots = "";
+    i = 0;
+    while (i < bullets) {
+        dots = dots + "*";
+        i = i + 1;
+    }
+    btxt = Image.Text(dots, 0.949, 0.651, 0.353, 1, "Sans 14");
+    if (btxt) {
+        bullet_sprite.SetImage(btxt);
+        bullet_sprite.SetPosition(ox + sw / 2 - btxt.GetWidth() / 2,
+                                  oy + bar_cy + sh * 0.10, 5);
+    }
+    shown = 1;
+}
+Plymouth.SetDisplayPasswordFunction(on_password);
+
+fun on_normal() {
+    if (shown) {
+        prompt_sprite.SetOpacity(0);
+        bullet_sprite.SetOpacity(0);
+        shown = 0;
+    }
+}
+Plymouth.SetDisplayNormalFunction(on_normal);
+
+# ── messages ───────────────────────────────────────────────────────────────
+msg_sprite = Sprite();
+
+fun on_message(text) {
+    m = Image.Text(text, 0.643, 0.592, 0.659, 1, "Sans 10");
+    if (m) {
+        msg_sprite.SetImage(m);
+        msg_sprite.SetPosition(ox + sw / 2 - m.GetWidth() / 2,
+                               oy + sh * 0.90, 5);
+    }
+}
+Plymouth.SetMessageFunction(on_message);
+Plymouth.SetUpdateStatusFunction(on_message);
+
+# ── shutdown ───────────────────────────────────────────────────────────────
+fun on_quit() {
+    quitting = 1;
+    glow.SetOpacity(0);
+    mark.SetOpacity(0);
+    word.SetOpacity(0);
+    track.SetOpacity(0);
+    fill.SetOpacity(0);
+}
+Plymouth.SetQuitFunction(on_quit);

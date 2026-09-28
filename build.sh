@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MorrowOS v1.1 "Dawn" — build script
+# MorrowOS "Dawn" — build script
 # Rebuilds the ISO from an Ubuntu 24.04 (noble) live ISO base.
 # Run as root.  Requires: squashfs-tools xorriso isolinux syslinux-common rsync
 set -e
@@ -16,6 +16,12 @@ ROOT="$WORK/squashfs-root"
 #    zstd-compressed segment; repacking destroys them and you get a BusyBox
 #    prompt with "/cow format specified as 'overlay' and no support found".
 #    Pass config via the kernel cmdline instead (casper reads username=).
+#    REGENERATING one is a different operation and is allowed: casper's own
+#    initramfs hooks lay its scripts down properly, which is how Ubuntu
+#    builds these in the first place.  That is what scripts/boot-splash.sh
+#    does, and it verifies the result before letting it near the ISO --
+#    see the long comment at the top of that file.  Do not "simplify" it
+#    into a repack.
 #  * NEVER blacklist vmwgfx.  VirtualBox VMSVGA *is* emulated VMware SVGA and
 #    needs it for KMS.  Blacklisting it means no DRM device, X never starts,
 #    and SDDM hangs after "Reached graphical.target".
@@ -35,7 +41,7 @@ for t in unsquashfs mksquashfs xorriso rsync; do
 done
 [ -f "$ISO_IN" ] || { echo "Base ISO not found: $ISO_IN"; exit 1; }
 
-echo "==> 1/8  Unpacking base ISO"
+echo "==> 1/9  Unpacking base ISO"
 rm -rf "$WORK"; mkdir -p "$STAGE"
 xorriso -osirrox on -indev "$ISO_IN" -extract / "$STAGE"
 chmod -R u+w "$STAGE"
@@ -59,47 +65,92 @@ xorriso -indev "$ISO_IN" -report_el_torito plain 2>&1 | head -30 || true
 echo "-----------------------------------------------------------------"
 
 
-echo "==> 2/8  Unpacking squashfs"
+echo "==> 2/9  Unpacking squashfs"
 unsquashfs -d "$ROOT" "$STAGE/casper/filesystem.squashfs"
 
-echo "==> 3/8  Mounting chroot"
+echo "==> 3/9  Mounting chroot"
 cp /etc/resolv.conf "$ROOT/etc/resolv.conf"
 mount --bind /dev "$ROOT/dev"; mount --bind /dev/pts "$ROOT/dev/pts"
 mount -t proc proc "$ROOT/proc"; mount -t sysfs sysfs "$ROOT/sys"
 cleanup() { umount "$ROOT/sys" "$ROOT/proc" "$ROOT/dev/pts" "$ROOT/dev" 2>/dev/null || true; }
 trap cleanup EXIT
 
-echo "==> 4/8  Installing packages"
+echo "==> 4/10  Installing packages"
 chroot "$ROOT" apt-get update -qq
-chroot "$ROOT" apt-get install -y \
-    kwin-x11 dbus-x11 \
-    plymouth plymouth-themes \
-    python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-pil flatpak \
-    xserver-xorg-video-vesa xserver-xorg-video-fbdev \
-    xserver-xorg-video-vmware xserver-xorg-video-qxl \
-    xserver-xorg-video-amdgpu xserver-xorg-video-ati \
-    xserver-xorg-video-nouveau xserver-xorg-video-intel \
-    polkit-kde-agent-1 policykit-1 \
-    papirus-icon-theme gtk-update-icon-cache \
-    firefox libreoffice-writer libreoffice-calc vlc
+
+# ── REQUIRED ────────────────────────────────────────────────────────────────
+# Without these the image does not boot to a usable desktop. A failure here
+# is fatal, and should be.
+MORROW_SYSTEM="
+    kwin-x11 dbus-x11
+    plymouth plymouth-themes
+    python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-pil
+    flatpak
+    xserver-xorg-video-vesa xserver-xorg-video-fbdev
+    xserver-xorg-video-vmware xserver-xorg-video-qxl
+    xserver-xorg-video-amdgpu xserver-xorg-video-ati
+    xserver-xorg-video-nouveau xserver-xorg-video-intel
+    polkit-kde-agent-1 policykit-1
+    papirus-icon-theme gtk-update-icon-cache
+"
+
+# ── THE APP SET — EDIT THIS LIST ────────────────────────────────────────────
+# This is what a user finds installed on first boot. Add or remove freely;
+# everything here grows the ISO, so check the size the build reports at the
+# end if you add something large.
+#
+# Unlike the list above, a failure here is NOT fatal. One mistyped or
+# renamed package would otherwise kill a 40-minute build at minute 12, so
+# the batch is retried one package at a time and the build reports what it
+# could not install and carries on.
+MORROW_APPS="
+    firefox
+    thunderbird
+    libreoffice-writer libreoffice-calc libreoffice-impress
+    vlc gwenview okular
+    kate ark spectacle kcalc filelight
+    partitionmanager
+    git curl wget htop
+    build-essential python3-pip
+    calamares
+"
+
+chroot "$ROOT" apt-get install -y $MORROW_SYSTEM
+
+if chroot "$ROOT" apt-get install -y $MORROW_APPS; then
+    echo "    app set installed"
+else
+    echo "    batch app install failed — retrying one at a time to find the culprit"
+    FAILED_APPS=""
+    for pkg in $MORROW_APPS; do
+        chroot "$ROOT" apt-get install -y "$pkg" >/dev/null 2>&1 \
+            || FAILED_APPS="$FAILED_APPS $pkg"
+    done
+    if [ -n "$FAILED_APPS" ]; then
+        echo "!!  could not install:$FAILED_APPS"
+        echo "    the build continues without them — check the names against"
+        echo "    the noble archive if you expected them to be there."
+    fi
+fi
 
 # Flathub must be registered system-wide at build time, or every flatpak
 # install in MorrowStore fails with "remote not configured" on first run.
 chroot "$ROOT" flatpak remote-add --if-not-exists flathub \
     https://flathub.org/repo/flathub.flatpakrepo
 
-echo "==> 5/8  Installing MorrowOS branding"
+echo "==> 5/10  Installing MorrowOS branding"
 # identity
 install -m644 "$SRC/etc/os-release"           "$ROOT/etc/os-release"
 install -m644 "$SRC/etc/lsb-release"          "$ROOT/etc/lsb-release"
 install -m644 "$SRC/etc/casper.conf"          "$ROOT/etc/casper.conf"
 install -Dm644 "$SRC/etc/X11/Xwrapper.config" "$ROOT/etc/X11/Xwrapper.config"
 
-# plymouth
+# plymouth.  The theme is only installed here -- making it the default and
+# getting it into the initrd (which is where plymouth actually reads it from)
+# happens in step 7, which verifies both instead of "|| true"-ing past them.
 rm -rf "$ROOT/usr/share/plymouth/themes/morrowos"
 cp -r "$SRC/usr/share/plymouth-morrowos" "$ROOT/usr/share/plymouth/themes/morrowos"
 install -Dm644 "$SRC/etc/plymouth/plymouthd.conf" "$ROOT/etc/plymouth/plymouthd.conf"
-chroot "$ROOT" plymouth-set-default-theme morrowos || true
 
 # sddm  (theme shipped; stock breeze active until the QML is validated on hw)
 rm -rf "$ROOT/usr/share/sddm/themes/morrowos"
@@ -144,7 +195,7 @@ for f in "$ROOT"/usr/share/applications/systemsettings.desktop \
         "$f"
 done
 
-echo "==> 6/8  Installing MorrowStore"
+echo "==> 6/10  Installing MorrowStore"
 mkdir -p "$ROOT/usr/lib/morrowstore" "$ROOT/usr/share/morrowstore"
 cp "$SRC"/morrowstore/*.py "$ROOT/usr/lib/morrowstore/"
 install -m644 "$SRC/morrowstore/catalog.json" "$ROOT/usr/share/morrowstore/catalog.json"
@@ -183,6 +234,50 @@ chroot "$ROOT" gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null 
 test -f "$ROOT/usr/share/icons/hicolor/256x256/apps/morrowstore.png" || {
     echo "!! morrowstore icon missing from the image after install"; exit 1; }
 
+echo "==> 7/10  Boot splash"
+# Plymouth reads its theme from inside the INITRD, not from the filesystem.
+# Through v1.2 the theme was installed into the squashfs and nothing ever
+# touched the initrd, so every boot showed the stock Kubuntu splash.
+#
+# This is the only step that can produce an unbootable ISO, so it is the only
+# step that verifies itself: boot-splash.sh keeps the pristine initrd aside,
+# checks the regenerated one for casper's scripts, the overlay/squashfs/loop
+# modules and the theme, and restores the original on any failure.  A failure
+# here costs a stock splash, never a boot -- so it warns and carries on.
+#
+# Set MORROW_BOOT_SPLASH=0 to skip it entirely and ship the base initrd.
+SPLASH_OK=0
+if [ "${MORROW_BOOT_SPLASH:-1}" = "1" ]; then
+    if bash "$SRC/scripts/boot-splash.sh" "$ROOT" "$STAGE"; then
+        SPLASH_OK=1
+    else
+        echo "    continuing with the base initrd — the ISO will still boot,"
+        echo "    it will just show the stock splash."
+    fi
+else
+    echo "    skipped (MORROW_BOOT_SPLASH=0)"
+fi
+
+echo "==> 8/10  Installer branding"
+# Makes the disk installer say MorrowOS rather than Kubuntu. It edits exactly
+# one line of Kubuntu's settings.conf (the branding: line) and leaves the
+# tested module sequence alone -- see scripts/installer-branding.sh for why.
+# Like the splash, it degrades rather than failing the build.
+INSTALLER_OK=0
+# Derive the version from the output filename. The trailing-dot strip is
+# load-bearing: "morrowos-v1.3.iso" otherwise yields "1.3." and the installer
+# advertises MorrowOS 1.3. "Dawn".
+MORROW_VERSION="${MORROW_VERSION:-$(printf '%s' "$ISO_OUT" \
+    | sed -n 's/.*morrowos-v\{0,1\}\([0-9][0-9.]*\).*/\1/p' \
+    | sed 's/\.*$//')}"
+[ -n "$MORROW_VERSION" ] || MORROW_VERSION="1.0"
+if bash "$SRC/scripts/installer-branding.sh" "$ROOT" "$MORROW_VERSION"; then
+    INSTALLER_OK=1
+else
+    echo "    continuing with the stock installer — it still works,"
+    echo "    it will just say Kubuntu."
+fi
+
 # The live user is created at boot by casper (username= on the cmdline).
 # It must NOT pre-exist in the image or casper's user-setup-apply collides.
 for u in morrow haven ubuntu; do
@@ -197,13 +292,16 @@ chroot "$ROOT" apt-get clean
 rm -rf "$ROOT/var/lib/apt/lists"/* "$ROOT/etc/resolv.conf"
 cleanup; trap - EXIT
 
-echo "==> 7/8  Repacking squashfs"
+echo "==> 9/10  Repacking squashfs"
 rm -f "$STAGE/casper/filesystem.squashfs"
 mksquashfs "$ROOT" "$STAGE/casper/filesystem.squashfs" \
     -comp zstd -Xcompression-level 15 -noappend
 du -sx --block-size=1 "$ROOT" | cut -f1 > "$STAGE/casper/filesystem.size"
 
-# boot config + disk identity.  initrd/vmlinuz are left byte-for-byte untouched.
+# boot config + disk identity.  vmlinuz is left byte-for-byte untouched; the
+# initrd is only ever replaced by step 7, and only after it has verified the
+# replacement (see scripts/boot-splash.sh).  If that step did not run or did
+# not pass, casper/initrd here is still the base ISO's own file.
 # Which menu file to write depends on the base ISO's bootloader: pre-22.04
 # bases have isolinux/, modern ones are GRUB-only for both BIOS and UEFI.
 WROTE_MENU=0
@@ -212,10 +310,23 @@ if [ -d "$STAGE/isolinux" ]; then
     echo "    boot menu -> isolinux/isolinux.cfg"
     WROTE_MENU=1
 fi
+GRUB_THEME=0
 if [ -d "$STAGE/boot/grub" ]; then
     install -m644 "$SRC/iso/grub.cfg" "$STAGE/boot/grub/grub.cfg"
     echo "    boot menu -> boot/grub/grub.cfg"
     WROTE_MENU=1
+
+    # Menu theme.  Unlike the splash this is just files on the ISO: if GRUB
+    # cannot load it (no gfxmenu, no png, a bad theme.txt) it falls back to
+    # the plain text menu and still boots, and grub.cfg tests for the file
+    # before setting $theme.
+    if [ -d "$SRC/iso/grub-theme" ]; then
+        rm -rf "$STAGE/boot/grub/themes/morrowos"
+        mkdir -p "$STAGE/boot/grub/themes"
+        cp -r "$SRC/iso/grub-theme" "$STAGE/boot/grub/themes/morrowos"
+        echo "    boot menu theme -> boot/grub/themes/morrowos"
+        GRUB_THEME=1
+    fi
 fi
 if [ "$WROTE_MENU" = "0" ]; then
     echo "!! Base ISO has neither isolinux/ nor boot/grub/ — see the layout"
@@ -234,7 +345,7 @@ install -m644 "$SRC/iso/disk-info.txt" "$STAGE/.disk/info"
          -not -name "boot.catalog" -print0 \
   | xargs -0 md5sum > md5sum.txt )
 
-echo "==> 8/8  Building ISO (BIOS + UEFI, 64-bit)"
+echo "==> 10/10  Building ISO (BIOS + UEFI, 64-bit)"
 rm -f "$ISO_OUT"
 
 # Rather than reconstructing the boot structures with -as mkisofs (which
@@ -242,8 +353,12 @@ rm -f "$ISO_OUT"
 # image lives -- both of which moved between Ubuntu releases), replay the
 # source ISO's own boot setup verbatim and overwrite only the files we
 # actually changed. Whatever BIOS+UEFI arrangement the base shipped with
-# carries over intact. The initrd is never in the -map list, so rule 1
-# above holds by construction.
+# carries over intact.
+#
+# The initrd is in the -map list only when $SPLASH_OK is 1, which step 7
+# sets only after verifying the regenerated initrd still contains casper's
+# scripts and the overlay/squashfs/loop modules.  An unverified initrd can
+# therefore never reach the ISO.
 xorriso -indev "$ISO_IN" -outdev "$ISO_OUT" \
     -volid "MORROWOS" \
     -compliance no_emul_toc \
@@ -255,18 +370,36 @@ xorriso -indev "$ISO_IN" -outdev "$ISO_OUT" \
        echo -map "$STAGE/isolinux/isolinux.cfg" /isolinux/isolinux.cfg ) \
     $( [ -f "$STAGE/boot/grub/grub.cfg" ] && \
        echo -map "$STAGE/boot/grub/grub.cfg" /boot/grub/grub.cfg ) \
+    $( [ "$GRUB_THEME" = "1" ] && \
+       echo -map "$STAGE/boot/grub/themes/morrowos" /boot/grub/themes/morrowos ) \
+    $( [ "$SPLASH_OK" = "1" ] && \
+       echo -map "$STAGE/casper/initrd" /casper/initrd ) \
     -boot_image any replay
 
 echo
 echo "Built: $ISO_OUT ($(du -h "$ISO_OUT" | cut -f1))"
+if [ "$SPLASH_OK" = "1" ]; then
+    echo "Boot splash: MorrowOS (initrd regenerated and verified)"
+else
+    echo "Boot splash: STOCK — the initrd was left untouched"
+fi
+if [ "$GRUB_THEME" = "1" ]; then
+    echo "Boot menu:   MorrowOS Dawn theme"
+fi
+if [ "$INSTALLER_OK" = "1" ]; then
+    echo "Installer:   MorrowOS-branded (version $MORROW_VERSION)"
+else
+    echo "Installer:   STOCK — it will say Kubuntu"
+fi
 sha256sum "$ISO_OUT"
 echo
 echo "Boot structures carried over from the base ISO:"
 xorriso -indev "$ISO_OUT" -report_el_torito plain 2>&1 | head -20 || true
 echo
 echo "Test BIOS boot:  qemu-system-x86_64 -m 3072 -smp 2 -cdrom $ISO_OUT -boot d -vga virtio"
-if [ -n "$EFI_IMG" ]; then
-    echo "Test UEFI boot:  qemu-system-x86_64 -m 3072 -smp 2 -cdrom $ISO_OUT -boot d -vga virtio \\"
-    echo "                   -bios /usr/share/OVMF/OVMF_CODE.fd"
-    echo "  (needs the 'ovmf' package on the build/test host)"
-fi
+# The replay approach carries the base ISO's UEFI boot structures over, so
+# this is always worth testing.  (This used to be gated on $EFI_IMG, which is
+# never assigned anywhere -- the hint silently never printed.)
+echo "Test UEFI boot:  qemu-system-x86_64 -m 3072 -smp 2 -cdrom $ISO_OUT -boot d -vga virtio \\"
+echo "                   -bios /usr/share/OVMF/OVMF_CODE.fd"
+echo "  (needs the 'ovmf' package on the build/test host)"
